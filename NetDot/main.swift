@@ -265,6 +265,54 @@ final class NetDot: NSObject, NSApplicationDelegate {
 
     @objc(mouseExited:) func mouseExited(with event: NSEvent) { closeHover() }
 
+    // `NetDot --snapshot <dir>`: draw every icon and hover card into PNG files
+    // without touching the VPN. Used for the pictures in the README.
+    func snapshot(to dir: String) {
+        let cases: [(String, Look, NetState, String, String)] = [
+            ("protected", .protected, .alive, "shield", "Туннель живой, прямой IP для зарубежных сайтов закрыт."),
+            ("fixing", .fixing, .dead, "shield", "Прямой IP закрыт. Переподключаю Happ…"),
+            ("waiting", .waiting, .dead, "shield", "VPN выключен, прямой IP закрыт. В меню можно переподключить VPN."),
+            ("open", .open, .vpnOff, "on", "VPN выключен, интернет идёт напрямую с обычным IP."),
+            ("offline", .offline, .offline, "on", "Сети нет. Это не блокировка скриптом."),
+        ]
+        for (name, nextLook, nextState, mark, text) in cases {
+            look = nextLook
+            state = nextState
+            shieldMark = mark
+            busy = nextLook == .fixing
+            detail = text
+            let card = hoverController().view
+            let box = NSBox()
+            box.boxType = .custom
+            box.borderWidth = 0
+            box.cornerRadius = 12
+            box.fillColor = .windowBackgroundColor
+            box.contentViewMargins = .zero
+            box.contentView = card
+            box.frame = NSRect(origin: .zero, size: card.fittingSize)
+            write(box, to: "\(dir)/card-\(name).png")
+
+            let word = lookWord(nextLook)
+            let picture = NSImageView(image: icon(nextLook, point: 15))
+            let line = NSStackView(views: word.isEmpty ? [picture] : [picture, label(word, size: 13)])
+            line.spacing = 4
+            line.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
+            line.frame = NSRect(origin: .zero, size: line.fittingSize)
+            write(line, to: "\(dir)/icon-\(name).png")
+        }
+    }
+
+    private func write(_ view: NSView, to path: String) {
+        let window = NSWindow(contentRect: view.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: .aqua)
+        window.backgroundColor = .clear
+        window.contentView?.addSubview(view)
+        view.layoutSubtreeIfNeeded()
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    }
+
     private func closeHover() {
         popover?.close()
         popover = nil
@@ -716,6 +764,11 @@ struct Main {
     static func main() {
         let app = NSApplication.shared
         let delegate = NetDot()
+        let args = CommandLine.arguments
+        if let flag = args.firstIndex(of: "--snapshot"), flag + 1 < args.count {
+            delegate.snapshot(to: args[flag + 1])
+            return
+        }
         app.delegate = delegate
         app.setActivationPolicy(.accessory)
         app.run()

@@ -1,106 +1,141 @@
-# NetDot — чтобы настоящий IP не «мигал» при обрыве VPN
+# NetDot
 
-Значок в строке меню macOS и набор правил встроенного файрвола (pf). Пока
-защита включена, интернет идёт только через VPN. Если VPN упал, завис или
-выключен — интернета просто нет, а настоящий адрес наружу не выходит. Открыть
-интернет мимо VPN можно только руками, пунктом меню.
+English · [Русский](README.ru.md)
 
-Сделано для себя, под связку **Happ / Red Shield / Amnezia** на одном маке.
-Работает с любым VPN, который поднимает туннель `utun`, но кнопки
-«Переподключить» рассчитаны именно на эти три приложения.
+A menu bar icon and a set of `pf` firewall rules for macOS that keep your real
+IP address from showing when a VPN drops, hangs or reconnects.
 
-## Что показывает значок
+While the shield is on, traffic leaves only through the VPN. If the VPN is
+down, there is simply no internet, and it stays that way until **you** bring
+the VPN back or open the internet by hand. Nothing reopens it automatically.
 
-| Значок | Что значит | Настоящий адрес |
+<img src="docs/card-protected.png" width="300" alt="Hover card: protected"> <img src="docs/card-open.png" width="300" alt="Hover card: open">
+
+> **Status: a personal tool, shared as is.** It was built for one Mac running
+> Happ, Red Shield and Amnezia. The interface is in Russian. It works with any
+> VPN that brings up a `utun` tunnel, but the "Reconnect" menu items know only
+> those three apps. Read [What has not been tested](#what-has-not-been-tested)
+> before relying on it.
+
+## Why
+
+Most VPN clients either have no kill switch or drop it for the seconds between
+"disconnect" and "connect". If a site must never see your real address, those
+seconds are the problem. NetDot moves the block out of the VPN client and into
+the system firewall, so it does not depend on the client being alive.
+
+## What the icon means
+
+| Icon | Meaning | Real address |
 |---|---|---|
-| Зелёный щит с галочкой | VPN работает, мимо него выхода нет | скрыт |
-| Оранжевые стрелки, «чиню» | VPN упал, NetDot его перезапускает | скрыт |
-| Оранжевая пауза, «жду тебя» | VPN не работает, включи его руками | скрыт |
-| Красный открытый замок, «открыто» | Защита снята | виден или мигнёт при обрыве |
-| Серый перечёркнутый Wi-Fi | Сети нет вообще | — |
+| <img src="docs/icon-protected.png" height="24" alt="green shield"> | VPN works, nothing leaves past it | hidden |
+| <img src="docs/icon-fixing.png" height="24" alt="fixing"> | VPN dropped, NetDot is restarting it | hidden |
+| <img src="docs/icon-waiting.png" height="24" alt="waiting for you"> | VPN is down, turn it on yourself | hidden |
+| <img src="docs/icon-open.png" height="24" alt="open"> | Shield is off | visible, or will show if the VPN drops |
+| <img src="docs/icon-offline.png" height="24" alt="offline"> | No network at all | — |
 
-Правило одно: **зелёный и оранжевый — адрес скрыт, красный — адрес виден.**
-При наведении мыши открывается карточка: перекрыт ли интернет мимо VPN,
-работает ли VPN, виден ли адрес, и памятка по всем значкам.
+One rule: **green and orange mean hidden, red means visible.** Hovering the
+icon opens a card with three facts (is the internet past the VPN blocked, is
+the VPN up, is the address visible) and a legend of all five icons.
 
-## Как устроено
+## How it works
 
-- **Значок** (`NetDot/main.swift`) — приложение без окна. Раз в 6 секунд
-  проверяет, грузится ли настоящая страница через туннель. Сам ничего не
-  открывает: умеет только включать защиту и перезапускать VPN.
-- **Помощник с правами администратора** (`bin/install-netdot-helper`) —
-  ставится один раз, слушает сокет `/var/run/netdot.sock` и выполняет четыре
-  команды: включить защиту, обновить её, выключить интернет, включить интернет.
-  Поэтому меню не спрашивает пароль.
-- **Правила** (`lib.sh`) — в режиме защиты на основном интерфейсе запрещён
-  любой выход, кроме списка: серверы VPN, домашняя сеть, офисные сети из
-  настроек, сайты, которые VPN-клиент сам пускает напрямую.
-- **При старте мака** защита включается до входа в систему, если была включена
-  до перезагрузки.
-- **Зависший VPN** NetDot лечит сам: останавливает и запускает Happ, до десяти
-  попыток. Если не вышло — остаётся «жду тебя», интернет закрыт.
+- **Menu bar app** (`NetDot/main.swift`, single file, AppKit, no
+  dependencies). Every 6 seconds it loads a real page through the tunnel. It
+  can turn the shield on and restart the VPN; it never turns the shield off by
+  itself.
+- **Root helper** (`bin/install-netdot-helper`). Installed once. A launchd
+  socket at `/var/run/netdot.sock` accepts exactly five words: `version`,
+  `shield`, `refresh`, `on`, `off`. That is why the menu never asks for a
+  password.
+- **Rules** (`lib.sh`). In shield mode everything outbound on the main
+  interface is blocked except an allowlist: VPN servers, the local network,
+  the networks from your config, and the sites your VPN client deliberately
+  routes directly. The allowlist is rebuilt every two minutes, because VPN
+  servers change addresses.
+- **At boot** the shield is restored before login if it was on before the
+  restart.
+- **A hung VPN** (connected on paper, nothing loads) is stopped and started
+  again, up to ten attempts. If that fails, the icon stays on "waiting for
+  you" and the internet stays blocked.
 
-## Установка
+## Install
 
-Нужны macOS 13 или новее и Xcode Command Line Tools (`xcode-select --install`).
+Requires macOS 13 or later and the Xcode Command Line Tools
+(`xcode-select --install`).
 
 ```bash
-git clone <адрес репозитория> netdot
+git clone https://github.com/Branovitskiy/netdot.git
 cd netdot
 ./install.sh
 ```
 
-Потом:
+Then:
 
-1. Открой `~/Library/Application Support/amnezia-manual-ks/config.env` и впиши
-   адрес своего VPN-сервера. Без этого после включения защиты VPN не сможет
-   подключиться.
-2. Один раз поставь помощника: `sudo ~/bin/install-netdot-helper`.
-3. В меню значка выбери «Переподключить …» для своего VPN — это включит защиту.
+1. Edit `~/Library/Application Support/amnezia-manual-ks/config.env` and put in
+   the address of your VPN server. Without it the VPN cannot connect once the
+   shield is on.
+2. Install the helper once: `sudo ~/bin/install-netdot-helper`.
+3. In the icon menu choose "Переподключить …" for your VPN. This turns the
+   shield on.
 
-После правки `lib.sh` помощника нужно поставить заново (шаг 2): он работает со
-своей копией файла. После правки `main.swift` — запустить
+After editing `lib.sh`, repeat step 2: the helper runs its own copy. After
+editing `main.swift`, run
 `~/Library/Application Support/amnezia-manual-ks/NetDot/build.sh`.
 
-Чтобы macOS не спрашивала разрешения заново после каждой сборки, положи рядом с
-`config.env` файл `sign-identity.txt` с одной строкой — именем своего
-сертификата разработчика (`security find-identity -v -p codesigning`).
+To stop macOS from asking for the app's permissions after every rebuild, put a
+file `sign-identity.txt` next to `config.env` with one line: the name of your
+code signing certificate (`security find-identity -v -p codesigning`).
 
-## Если интернет пропал
+## If the internet is gone
 
-1. Наведи мышь на значок — карточка скажет, что именно не так.
-2. Оранжевый: включи VPN или выбери «Переподключить …».
-3. Нужно срочно без VPN: «Включить интернет». Значок станет красным — адрес
-   виден.
-4. Аварийно из терминала: `sudo ~/bin/internet-on`.
+1. Hover the icon. The card says what is wrong.
+2. Orange: turn the VPN on, or choose "Переподключить …".
+3. Need the internet without the VPN right now: "Включить интернет". The icon
+   turns red, your address is visible.
+4. From a terminal, as a last resort: `sudo ~/bin/internet-on`.
 
-## Грабли, на которые уже наступили
+## Lessons learned the hard way
 
-- **Один VPN за раз.** Два одновременно включённых клиента отбирают трафик друг
-  у друга, включая связь со своим же сервером.
-- **Закрытое окно ≠ выключенный VPN.** У Red Shield туннель держит фоновая
-  служба; выключается только кнопкой «Отключить».
-- **Сервер в ссылке VLESS лучше задавать IP-адресом, а не именем.** Иначе
-  клиент с DNS-over-HTTPS после смены сети не может узнать адрес своего
-  сервера, пока не поднят туннель, — и не поднимает туннель.
-- **Проверять туннель надо настоящей страницей**, а не TCP-соединением:
-  клиент отвечает на соединение сам, даже когда сервер мёртв.
-- **Две перезагрузки правил pf одновременно** падают с «Resource busy» —
-  команды помощника идут по очереди через `lockf`.
+- **One VPN at a time.** Two clients running together take traffic from each
+  other, including the connection to their own server.
+- **A closed window is not a disconnected VPN.** Red Shield keeps its tunnel
+  in a background service.
+- **Give the VLESS server as an IP, not a hostname.** A client using
+  DNS-over-HTTPS cannot resolve its own server after a network change until
+  the tunnel is up, and so never brings the tunnel up.
+- **Probe the tunnel with a real page**, not a TCP connect: the client answers
+  the connect itself even when the server is dead.
+- **Two `pf` reloads at once** fail with "Resource busy", so helper commands
+  are serialized with `lockf`.
+- **One `start` is not enough.** Right after a network change macOS answers
+  "No network available" and drops the request.
 
-## Что не проверено
+## What has not been tested
 
-- Поведение после настоящей перезагрузки мака (по коду защита поднимается сама).
-- Оранжевые и красное состояния значка вживую.
-- Установка `install.sh` на чистом маке: до сих пор всё ставилось по частям.
+- A real reboot (by the code, the shield comes back by itself).
+- The orange and red icon states on a live machine.
+- `install.sh` on a clean Mac: so far everything was installed piece by piece.
+- The shell scripts have not been through shellcheck.
+- IPv6: everything past the VPN is blocked, IPv6 included, but the allowlist is IPv4 only, so a VPN server reachable only over IPv6 will not connect.
 
-## Удаление
+## Uninstall
 
 ```bash
-sudo ~/bin/internet-on
-sudo launchctl bootout system/local.branovitskiy.netdot.helper
-sudo launchctl bootout system/local.branovitskiy.netdot.boot
-sudo rm -rf "/Library/Application Support/NetDot" /Library/LaunchDaemons/local.branovitskiy.netdot.*.plist
-launchctl bootout gui/$(id -u)/local.branovitskiy.netdot
-rm -rf ~/Applications/NetDot.app ~/Library/LaunchAgents/local.branovitskiy.netdot.plist
+./uninstall.sh
 ```
+
+It opens the internet first, then removes the icon, the helper and the rules.
+Your settings in `~/Library/Application Support/amnezia-manual-ks` are kept.
+
+## Pictures
+
+Every picture in `docs/` is drawn by the app itself, without touching the VPN:
+
+```bash
+~/Applications/NetDot.app/Contents/MacOS/NetDot --snapshot docs
+```
+
+## License
+
+[MIT](LICENSE)
