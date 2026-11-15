@@ -1,0 +1,20 @@
+#!/bin/bash
+# Block general internet. Office nets + configured VPN server IPs stay reachable.
+set -euo pipefail
+
+KS_DIR="${HOME}/Library/Application Support/amnezia-manual-ks"
+# shellcheck disable=SC1091
+source "${KS_DIR}/lib.sh"
+
+need_sudo "$@"
+resolve_server_ip
+clear_amnezia_strict_flags
+
+echo "Installing internet kill switch..."
+conf="$(write_pf_conf disconnected)"
+load_pf "${conf}"
+
+write_internet_state off
+echo "Internet OFF."
+echo "Allowed: localhost, DNS, office ranges, Amnezia server ${AMNEZIA_SERVER_IP}."
+echo "Turn back on with: internet-on"

@@ -1,0 +1,7 @@
+config.env
+sign-identity.txt
+endpoints.txt
+direct-ips.txt
+internet-state
+*.conf
+.DS_Store

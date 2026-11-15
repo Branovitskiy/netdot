@@ -1,0 +1,178 @@
+#!/bin/bash
+# One-time root helper so NetDot can switch the firewall without a password.
+set -euo pipefail
+
+if [[ "${EUID}" -ne 0 ]]; then
+  echo "Run this once with sudo. After that the menu will not ask for a password."
+  exit 1
+fi
+
+console_user="$(stat -f '%Su' /dev/console)"
+user_home="$(dscl . -read "/Users/${console_user}" NFSHomeDirectory | awk '{print $2}')"
+src="${user_home}/Library/Application Support/amnezia-manual-ks/lib.sh"
+dest="/Library/Application Support/NetDot"
+label="local.branovitskiy.netdot.helper"
+plist="/Library/LaunchDaemons/${label}.plist"
+
+[[ -f "${src}" ]] || { echo "missing ${src}"; exit 1; }
+
+mkdir -p "${dest}"
+cp "${src}" "${dest}/lib.sh"
+
+cat > "${dest}/internet-shield" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+source "/Library/Application Support/NetDot/lib.sh"
+need_sudo "$@"
+resolve_server_ip
+clear_amnezia_strict_flags
+conf="$(write_pf_conf shield)"
+load_pf "${conf}"
+write_internet_state shield
+echo "Shield ON."
+EOF
+
+cat > "${dest}/internet-on" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+source "/Library/Application Support/NetDot/lib.sh"
+need_sudo "$@"
+fix_amnezia_prefs_ownership
+clear_amnezia_strict_flags
+flush_manual_ks
+disable_all_pf
+restart_amnezia_service
+write_internet_state on
+echo "Internet ON."
+EOF
+
+cat > "${dest}/internet-off" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+source "/Library/Application Support/NetDot/lib.sh"
+need_sudo "$@"
+resolve_server_ip
+clear_amnezia_strict_flags
+conf="$(write_pf_conf disconnected)"
+load_pf "${conf}"
+write_internet_state off
+echo "Internet OFF."
+EOF
+
+cat > "${dest}/internet-refresh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+source "/Library/Application Support/NetDot/lib.sh"
+need_sudo "$@"
+resolve_server_ip
+refresh_shield
+EOF
+
+cat > "${dest}/netdot-helper" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+read -r cmd || exit 1
+root="/Library/Application Support/NetDot"
+# One command at a time: two pf reloads at once fail with "Resource busy",
+# and a failed shield made "Переподключить Happ" give up.
+lock="/var/run/netdot.lock"
+case "${cmd}" in
+  version) echo 5 ;;
+  shield) /usr/bin/lockf -k -t 60 "${lock}" "${root}/internet-shield" ;;
+  refresh) /usr/bin/lockf -k -t 2 "${lock}" "${root}/internet-refresh" ;;
+  on) /usr/bin/lockf -k -t 60 "${lock}" "${root}/internet-on" ;;
+  off) /usr/bin/lockf -k -t 60 "${lock}" "${root}/internet-off" ;;
+  *) echo "fail"; exit 1 ;;
+esac
+echo ok
+EOF
+
+chmod 755 "${dest}/lib.sh" "${dest}/internet-shield" "${dest}/internet-on" "${dest}/internet-off" "${dest}/internet-refresh" "${dest}/netdot-helper"
+chown -R root:wheel "${dest}"
+
+cat > "${plist}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${dest}/netdot-helper</string>
+  </array>
+  <key>UserName</key>
+  <string>root</string>
+  <key>GroupName</key>
+  <string>wheel</string>
+  <key>Sockets</key>
+  <dict>
+    <key>Listeners</key>
+    <dict>
+      <key>SockFamily</key>
+      <string>Unix</string>
+      <key>SockPathName</key>
+      <string>/var/run/netdot.sock</string>
+      <key>SockPathMode</key>
+      <integer>511</integer>
+    </dict>
+  </dict>
+  <key>inetdCompatibility</key>
+  <dict>
+    <key>Wait</key>
+    <false/>
+  </dict>
+  <key>StandardErrorPath</key>
+  <string>/var/log/netdot-helper.log</string>
+</dict>
+</plist>
+EOF
+chown root:wheel "${plist}"
+chmod 644 "${plist}"
+
+launchctl bootout "system/${label}" 2>/dev/null || true
+rm -f /var/run/netdot.sock
+launchctl bootstrap system "${plist}"
+echo "helper installed"
+
+# At Mac startup, before anyone logs in, put the shield back if it was on.
+# Otherwise the real IP is open for the seconds until NetDot starts.
+cat > "${dest}/netdot-boot" <<EOF
+#!/bin/bash
+state="${user_home}/Library/Application Support/amnezia-manual-ks/internet-state"
+[[ "\$(tr -d '[:space:]' < "\${state}" 2>/dev/null)" == "shield" ]] || exit 0
+export SUDO_USER="${console_user}"
+for _ in \$(seq 1 30); do
+  /usr/bin/lockf -k -t 60 /var/run/netdot.lock "${dest}/internet-shield" && exit 0
+  sleep 2
+done
+exit 1
+EOF
+chmod 755 "${dest}/netdot-boot"
+chown root:wheel "${dest}/netdot-boot"
+
+boot_label="local.branovitskiy.netdot.boot"
+boot_plist="/Library/LaunchDaemons/${boot_label}.plist"
+cat > "${boot_plist}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${boot_label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${dest}/netdot-boot</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardErrorPath</key>
+  <string>/var/log/netdot-boot.log</string>
+</dict>
+</plist>
+EOF
+chown root:wheel "${boot_plist}"
+chmod 644 "${boot_plist}"
+launchctl bootout "system/${boot_label}" 2>/dev/null || true
+launchctl bootstrap system "${boot_plist}"
+echo "boot shield installed"

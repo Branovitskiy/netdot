@@ -1,0 +1,19 @@
+#!/bin/bash
+# Block direct foreign traffic. Tunnel, Red Shield server, and split routes stay open.
+set -euo pipefail
+
+KS_DIR="${HOME}/Library/Application Support/amnezia-manual-ks"
+# shellcheck disable=SC1091
+source "${KS_DIR}/lib.sh"
+
+need_sudo "$@"
+resolve_server_ip
+clear_amnezia_strict_flags
+
+echo "Installing leak shield..."
+conf="$(write_pf_conf shield)"
+load_pf "${conf}"
+write_internet_state shield
+
+echo "Shield ON. Foreign sites go through the VPN or nowhere."
+echo "Your normal IP is not used for them, including during reconnect."

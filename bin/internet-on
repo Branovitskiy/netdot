@@ -1,0 +1,25 @@
+#!/bin/bash
+# Restore general internet. Clears manual kill switch + Amnezia Strict leftovers.
+set -euo pipefail
+
+KS_DIR="${HOME}/Library/Application Support/amnezia-manual-ks"
+# shellcheck disable=SC1091
+source "${KS_DIR}/lib.sh"
+
+need_sudo "$@"
+
+echo "Fixing Amnezia prefs ownership (if broken)..."
+fix_amnezia_prefs_ownership
+clear_amnezia_strict_flags
+
+echo "Removing manual kill switch and disabling leftover pf..."
+flush_manual_ks
+disable_all_pf
+
+echo "Restarting Amnezia service so it does not re-block..."
+restart_amnezia_service
+
+write_internet_state on
+echo "Internet ON."
+echo "If Happ/Amnezia still misbehave: quit them and open again."
+echo "Emergency only if still dead: reboot, then run internet-on once more."
