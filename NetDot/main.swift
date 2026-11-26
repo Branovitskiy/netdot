@@ -52,6 +52,7 @@ final class NetDot: NSObject, NSApplicationDelegate {
                 self.refreshShieldRules()
             }
         }
+        note("запуск NetDot")
         refresh()
         restoreSavedMode()
     }
@@ -91,7 +92,8 @@ final class NetDot: NSObject, NSApplicationDelegate {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             if self.helperIsCurrent() {
-                _ = self.socketSend("refresh")
+                let code = self.socketSend("refresh")
+                if code != 0 { self.note("плановое обновление правил защиты не прошло, код \(code)") }
             }
             DispatchQueue.main.async { self.refreshing = false }
         }
@@ -101,11 +103,94 @@ final class NetDot: NSObject, NSApplicationDelegate {
         showMenu()
     }
 
+    // Journal (netdot.log next to config.env): one line per change, one per
+    // minute while all is well, every check while something is wrong. It
+    // exists to answer "why was there no internet" after the fact: on 27.11
+    // Happ sat "connected" for 12 minutes with nothing going through, and
+    // nothing had recorded where the traffic went or when the rules changed.
+    private var journalKey = ""
+    private var journalAt = Date.distantPast
+    private var probeFacts = ""
+    private let journalQueue = DispatchQueue(label: "netdot.journal")
+    private var journalFile: String {
+        "\(home)/Library/Application Support/amnezia-manual-ks/netdot.log"
+    }
+
+    private func note(_ text: String) {
+        let format = DateFormatter()
+        format.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let line = "\(format.string(from: Date())) \(text)\n"
+        let path = journalFile
+        journalQueue.async {
+            let manager = FileManager.default
+            if let size = (try? manager.attributesOfItem(atPath: path))?[.size] as? Int, size > 2_000_000 {
+                try? manager.removeItem(atPath: path + ".1")
+                try? manager.moveItem(atPath: path, toPath: path + ".1")
+            }
+            if !manager.fileExists(atPath: path) {
+                manager.createFile(atPath: path, contents: nil)
+            }
+            if let handle = FileHandle(forWritingAtPath: path) {
+                handle.seekToEndOfFile()
+                handle.write(line.data(using: .utf8) ?? Data())
+                handle.closeFile()
+            }
+        }
+    }
+
+    private func firstLine(_ text: String) -> String {
+        text.split(separator: "\n").first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? "-"
+    }
+
+    private func journal(_ next: NetState, _ text: String) {
+        let mark = (try? String(contentsOfFile: stateFile, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "on"
+        let route = run("/sbin/route", ["-n", "get", "1.1.1.1"])
+            .split(separator: "\n").first { $0.contains("interface:") }?
+            .split(separator: ":").last?.trimmingCharacters(in: .whitespaces) ?? "-"
+        let address = firstLine(run("/usr/sbin/ipconfig", ["getifaddr", "en0"]))
+        let key = "\(next.rawValue)|\(mark)|\(route)|\(address)"
+        let wrong = next != .alive
+        guard key != journalKey || wrong || Date().timeIntervalSince(journalAt) > 60 else { return }
+        let changed = key != journalKey
+        journalKey = key
+        journalAt = Date()
+        var line = "состояние=\(next.rawValue) защита=\(mark) маршрут=\(route) en0=\(address) \(probeFacts)"
+        if changed || wrong {
+            let router = firstLine(run("/usr/sbin/ipconfig", ["getoption", "en0", "router"]))
+            let tunnels = run("/sbin/ifconfig", ["-l"]).split(whereSeparator: { $0 == " " || $0 == "\n" }).filter { $0.hasPrefix("utun") }
+                .joined(separator: ",")
+            let rules = "\(home)/Library/Application Support/amnezia-manual-ks/manual-ks.block.conf"
+            let age = ((try? FileManager.default.attributesOfItem(atPath: rules))?[.modificationDate] as? Date)
+                .map { String(Int(Date().timeIntervalSince($0))) } ?? "-"
+            line += " шлюз=\(router) happ=\(firstLine(run("/usr/sbin/scutil", ["--nc", "status", "Happ"])))"
+            line += " forti=\(firstLine(run("/usr/sbin/scutil", ["--nc", "status", "VPN"])))"
+            line += " redshield=\(redShieldIsUp() ? "да" : "нет") туннели=\(tunnels) правилам_сек=\(age)"
+            if wrong, address != "-", !address.isEmpty {
+                // Can the VPN server be reached past the tunnel at all?
+                let config = (try? String(contentsOfFile:
+                    "\(home)/Library/Application Support/amnezia-manual-ks/config.env", encoding: .utf8)) ?? ""
+                let server = config.split(separator: "\n").first { $0.hasPrefix("AMNEZIA_SERVER_IP=") }?
+                    .split(separator: "=").last.map(String.init) ?? ""
+                if isPublicIPv4(server) {
+                    let code = runCode("/usr/bin/curl", ["-s", "-o", "/dev/null", "-k", "--interface", "en0",
+                                                         "--connect-timeout", "2", "--max-time", "3",
+                                                         "https://\(server)/"])
+                    // 7 and 28 mean no connection; anything else got through to the server.
+                    line += " сервер_напрямую=\(code == 7 || code == 28 ? "нет" : "да")(\(code))"
+                }
+            }
+            line += " | \(text)"
+        }
+        note(line)
+    }
+
     private func refresh() {
         guard !busy else { return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             let (next, text) = self.probe()
+            self.journal(next, text)
             let happStuck = next == .dead && self.tunnelRoute() && self.happIsUp()
             DispatchQueue.main.async {
                 guard !self.busy else { return }
@@ -126,6 +211,7 @@ final class NetDot: NSObject, NSApplicationDelegate {
         guard stuckChecks >= 4, Date().timeIntervalSince(lastHeal) > 180 else { return }
         stuckChecks = 0
         lastHeal = Date()
+        note("действие: автолечение — Happ подключён, но ничего не грузится, перезапускаю")
         reconnectHapp()
     }
 
@@ -151,6 +237,7 @@ final class NetDot: NSObject, NSApplicationDelegate {
         let addressOK = address.contains("succeeded")
         let nameOK = page.trimmingCharacters(in: .whitespacesAndNewlines) == "204"
         let ok = addressOK && nameOK
+        probeFacts = "tcp=\(addressOK ? "да" : "нет") страница=\(page.trimmingCharacters(in: .whitespacesAndNewlines))"
         if iface.hasPrefix("utun") {
             if ok {
                 return (.alive, shielded
@@ -502,6 +589,7 @@ final class NetDot: NSObject, NSApplicationDelegate {
     private func guardedReconnect(label: String, body: @escaping () -> Void) {
         guard !busy else { return }
         busy = true
+        note("действие: переподключение \(label) — начало")
         apply(.dead, detail: "Запоминаю адрес сервера и закрываю прямой IP…")
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
@@ -510,7 +598,9 @@ final class NetDot: NSObject, NSApplicationDelegate {
             // real IP: a failed refresh of them is no reason to leave the VPN broken.
             let mark = (try? String(contentsOfFile: self.stateFile, encoding: .utf8))?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? "on"
-            if self.privileged("shield") != 0 && mark != "shield" {
+            let shieldCode = self.privileged("shield")
+            self.note("действие: переподключение \(label) — правила защиты обновлены, код \(shieldCode)")
+            if shieldCode != 0 && mark != "shield" {
                 DispatchQueue.main.async {
                     self.busy = false
                     self.apply(.dead, detail: "Защиту не включили, \(label) не трогал. Обычный IP не открывался.")
@@ -523,6 +613,7 @@ final class NetDot: NSObject, NSApplicationDelegate {
             body()
             // The VPN may have picked a server with a new address: allow it.
             _ = self.socketSend("refresh")
+            self.note("действие: переподключение \(label) — конец")
             DispatchQueue.main.async {
                 self.busy = false
                 self.refresh()
@@ -635,7 +726,8 @@ final class NetDot: NSObject, NSApplicationDelegate {
         let command = path.hasSuffix("internet-off") ? "off" : "on"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
-            _ = self.privileged(command)
+            let code = self.privileged(command)
+            self.note("действие: команда «\(command)» из меню, код \(code)")
             DispatchQueue.main.async {
                 self.busy = false
                 self.refresh()

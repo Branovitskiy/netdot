@@ -5,3 +5,4 @@ direct-ips.txt
 internet-state
 *.conf
 .DS_Store
+netdot.log*

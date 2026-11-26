@@ -89,6 +89,13 @@ code signing certificate (`security find-identity -v -p codesigning`).
 
 ## If the internet is gone
 
+NetDot keeps a journal in
+`~/Library/Application Support/amnezia-manual-ks/netdot.log`: one line per
+change, one per minute while all is well, every check while something is
+wrong. Each line says where traffic is routed, the Wi-Fi address, whether the
+VPN is up, whether the VPN server is reachable past the tunnel, and how old the
+firewall rules are. Read it first.
+
 1. Hover the icon. The card says what is wrong.
 2. Orange: turn the VPN on, or choose "Переподключить …".
 3. Need the internet without the VPN right now: "Включить интернет". The icon
